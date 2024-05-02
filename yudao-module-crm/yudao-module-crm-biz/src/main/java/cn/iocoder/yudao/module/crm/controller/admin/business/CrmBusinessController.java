@@ -1,7 +1,7 @@
 package cn.iocoder.yudao.module.crm.controller.admin.business;
 
 import cn.hutool.core.collection.CollUtil;
-import cn.iocoder.yudao.framework.apilog.core.annotations.ApiAccessLog;
+import cn.iocoder.yudao.framework.apilog.core.annotation.ApiAccessLog;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.common.util.collection.MapUtils;
@@ -177,7 +177,7 @@ public class CrmBusinessController {
                 buildBusinessDetailList(list));
     }
 
-    private List<CrmBusinessRespVO> buildBusinessDetailList(List<CrmBusinessDO> list) {
+    public List<CrmBusinessRespVO> buildBusinessDetailList(List<CrmBusinessDO> list) {
         if (CollUtil.isEmpty(list)) {
             return Collections.emptyList();
         }
