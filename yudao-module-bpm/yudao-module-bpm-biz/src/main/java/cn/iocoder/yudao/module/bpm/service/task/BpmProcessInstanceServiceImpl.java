@@ -264,8 +264,10 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
         Map<Long, AdminUserRespDTO> userMap = adminUserApi.getUserMap(userIds);
         Map<Long, DeptRespDTO> deptMap = deptApi.getDeptMap(convertSet(userMap.values(), AdminUserRespDTO::getDeptId));
 
+
         // 2. 表单权限
-        Map<String, String> formFieldsPermission = getFormFieldsPermission(bpmnModel, reqVO.getActivityId(), reqVO.getTaskId());
+        String taskId = reqVO.getTaskId() == null && todoTask != null ? todoTask.getId() : reqVO.getTaskId();
+        Map<String, String> formFieldsPermission = getFormFieldsPermission(bpmnModel, reqVO.getActivityId(), taskId);
 
         // 3. 拼接数据
         return BpmProcessInstanceConvert.INSTANCE.buildApprovalDetail(bpmnModel, processDefinition, processDefinitionInfo, processInstance,
@@ -555,11 +557,13 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
 
     @Override
     public String createProcessInstance(Long userId, @Valid BpmProcessInstanceCreateReqDTO createReqDTO) {
-        // 获得流程定义
-        ProcessDefinition definition = processDefinitionService.getActiveProcessDefinition(createReqDTO.getProcessDefinitionKey());
-        // 发起流程
-        return createProcessInstance0(userId, definition, createReqDTO.getVariables(), createReqDTO.getBusinessKey(),
-                createReqDTO.getStartUserSelectAssignees());
+        return FlowableUtils.executeAuthenticatedUserId(userId, () -> {
+            // 获得流程定义
+            ProcessDefinition definition = processDefinitionService.getActiveProcessDefinition(createReqDTO.getProcessDefinitionKey());
+            // 发起流程
+            return createProcessInstance0(userId, definition, createReqDTO.getVariables(), createReqDTO.getBusinessKey(),
+                    createReqDTO.getStartUserSelectAssignees());
+        });
     }
 
     private String createProcessInstance0(Long userId, ProcessDefinition definition,
