@@ -58,7 +58,8 @@ public interface BpmProcessInstanceConvert {
                                                                           Map<String, BpmCategoryDO> categoryMap,
                                                                           Map<String, List<Task>> taskMap,
                                                                           Map<Long, AdminUserRespDTO> userMap,
-                                                                          Map<Long, DeptRespDTO> deptMap) {
+                                                                          Map<Long, DeptRespDTO> deptMap,
+                                                                          Map<String, BpmProcessDefinitionInfoDO> processDefinitionInfoMap) {
         PageResult<BpmProcessInstanceRespVO> vpPageResult = BeanUtils.toBean(pageResult, BpmProcessInstanceRespVO.class);
         for (int i = 0; i < pageResult.getList().size(); i++) {
             BpmProcessInstanceRespVO respVO = vpPageResult.getList().get(i);
@@ -76,6 +77,11 @@ public interface BpmProcessInstanceConvert {
                     MapUtils.findAndThen(deptMap, startUser.getDeptId(), dept -> respVO.getStartUser().setDeptName(dept.getName()));
                 }
             }
+            // 摘要
+            respVO.setSummary(FlowableUtils.getSummary(processDefinitionInfoMap.get(respVO.getProcessDefinitionId()),
+                    pageResult.getList().get(i).getProcessVariables()));
+            // 表单
+            respVO.setFormVariables(pageResult.getList().get(i).getProcessVariables());
         }
         return vpPageResult;
     }
@@ -186,7 +192,8 @@ public interface BpmProcessInstanceConvert {
             return null;
         }
         return BeanUtils.toBean(task, BpmApprovalDetailRespVO.ActivityNodeTask.class)
-                .setStatus(FlowableUtils.getTaskStatus(task)).setReason(FlowableUtils.getTaskReason(task));
+                .setStatus(FlowableUtils.getTaskStatus(task)).setReason(FlowableUtils.getTaskReason(task))
+                .setSignPicUrl(FlowableUtils.getTaskSignPicUrl(task));
     }
 
     default Set<Long> parseUserIds(HistoricProcessInstance processInstance,

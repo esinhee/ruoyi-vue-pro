@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.bpm.controller.admin.task.vo.task;
 
+import cn.iocoder.yudao.framework.common.core.KeyValue;
 import cn.iocoder.yudao.module.bpm.controller.admin.base.user.UserSimpleBaseVO;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -78,6 +79,12 @@ public class BpmTaskRespVO {
     @Schema(description = "操作按钮设置值")
     private Map<Integer, OperationButtonSetting> buttonsSetting;
 
+    @Schema(description = "是否需要签名", example = "false")
+    private Boolean signEnable;
+
+    @Schema(description = "是否填写审批意见", example = "false")
+    private Boolean reasonRequire;
+
     @Data
     @Schema(description = "流程实例")
     public static class ProcessInstance {
@@ -93,6 +100,9 @@ public class BpmTaskRespVO {
 
         @Schema(description = "流程定义的编号", requiredMode = Schema.RequiredMode.REQUIRED, example = "2048")
         private String processDefinitionId;
+
+        @Schema(description = "流程摘要", example = "[]")
+        private List<KeyValue<String, String>> summary; // 只有流程表单，才有摘要！
 
         /**
          * 发起人的用户信息
