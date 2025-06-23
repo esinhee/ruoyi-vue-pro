@@ -8,7 +8,7 @@ import { Button, message,Tabs,Pagination,Form,RangePicker,DatePicker,Select,Inpu
 import { DictTag } from '#/components/dict-tag';
 import { DICT_TYPE, getDictOptions, getRangePickerDefaultProps } from '#/utils';
 import ${simpleClassName}Form from './modules/form.vue';
-import { Download, Plus, RefreshCw, Search } from '@vben/icons';
+import { Download, Plus, RefreshCw, Search, Trash2 } from '@vben/icons';
 import { ContentWrap } from '#/components/content-wrap';
 import { VxeColumn, VxeTable } from '#/adapter/vxe-table';
 import { TableToolbar } from '#/components/table-toolbar';
@@ -29,7 +29,8 @@ import { $t } from '#/locales';
 import { handleTree,isEmpty } from '@vben/utils'
 import { get${simpleClassName}List, delete${simpleClassName}, export${simpleClassName} } from '#/api/${table.moduleName}/${simpleClassName_strikeCase}';
 #else## 标准表接口
-import { get${simpleClassName}Page, delete${simpleClassName}, export${simpleClassName} } from '#/api/${table.moduleName}/${simpleClassName_strikeCase}';
+import { isEmpty } from '@vben/utils';
+import { get${simpleClassName}Page, delete${simpleClassName},#if ($deleteBatchEnable) delete${simpleClassName}List,#end export${simpleClassName} } from '#/api/${table.moduleName}/${simpleClassName_strikeCase}';
 #end
 import { downloadFileFromBlobPart } from '@vben/utils';
 
@@ -122,24 +123,24 @@ const [FormModal, formModalApi] = useVbenModal({
 });
 
 /** 创建${table.classComment} */
-function onCreate() {
+function handleCreate() {
   formModalApi.setData({}).open();
 }
 
 /** 编辑${table.classComment} */
-function onEdit(row: ${simpleClassName}Api.${simpleClassName}) {
+function handleEdit(row: ${simpleClassName}Api.${simpleClassName}) {
   formModalApi.setData(row).open();
 }
 
 #if (${table.templateType} == 2)## 树表特有：新增下级
 /** 新增下级${table.classComment} */
-function onAppend(row: ${simpleClassName}Api.${simpleClassName}) {
+function handleAppend(row: ${simpleClassName}Api.${simpleClassName}) {
   formModalApi.setData({ ${treeParentColumn.javaField}: row.id }).open();
 }
 #end
 
 /** 删除${table.classComment} */
-async function onDelete(row: ${simpleClassName}Api.${simpleClassName}) {
+async function handleDelete(row: ${simpleClassName}Api.${simpleClassName}) {
   const hideLoading = message.loading({
     content: $t('ui.actionMessage.deleting', [row.id]),
     duration: 0,
@@ -152,10 +153,37 @@ async function onDelete(row: ${simpleClassName}Api.${simpleClassName}) {
       key: 'action_process_msg',
     });
     await getList();
-  } catch {
+  } finally {
     hideLoading();
   }
 }
+
+#if ($table.templateType != 2 && $deleteBatchEnable)
+/** 批量删除${table.classComment} */
+async function handleDeleteBatch() {
+  const hideLoading = message.loading({
+    content: $t('ui.actionMessage.deleting'),
+    duration: 0,
+    key: 'action_process_msg',
+  });
+  try {
+    await delete${simpleClassName}List(checkedIds.value);
+    message.success( $t('ui.actionMessage.deleteSuccess') );
+    await getList();
+  } finally {
+    hideLoading();
+  }
+}
+
+const checkedIds = ref<number[]>([])
+function handleRowCheckboxChange({
+  records,
+}: {
+  records: ${simpleClassName}Api.${simpleClassName}[];
+}) {
+  checkedIds.value = records.map((item) => item.id);
+}
+#end
 
 /** 导出表格 */
 async function onExport() {
@@ -287,7 +315,7 @@ onMounted(() => {
               class="ml-2"
               :icon="h(Plus)"
               type="primary"
-              @click="onCreate"
+              @click="handleCreate"
               v-access:code="['${permissionPrefix}:create']"
           >
             {{ $t('ui.actionTitle.create', ['${table.classComment}']) }}
@@ -302,6 +330,19 @@ onMounted(() => {
           >
             {{ $t('ui.actionTitle.export') }}
           </Button>
+        #if ($table.templateType != 2 && $deleteBatchEnable)
+          <Button
+              :icon="h(Trash2)"
+              type="primary"
+              danger
+              class="ml-2"
+              :disabled="isEmpty(checkedIds)"
+              @click="handleDeleteBatch"
+              v-access:code="['${table.moduleName}:${simpleClassName_strikeCase}:delete']"
+          >
+            批量删除
+          </Button>
+        #end
         </TableToolbar>
       </template>
       <vxe-table
@@ -326,7 +367,14 @@ onMounted(() => {
 #end
           show-overflow
           :loading="loading"
+#if ($table.templateType != 2 && $deleteBatchEnable)
+          @checkboxAll="handleRowCheckboxChange"
+          @checkboxChange="handleRowCheckboxChange"
+#end
       >
+#if ($table.templateType != 2 && $deleteBatchEnable)
+        <vxe-column type="checkbox" width="40"></vxe-column>
+#end
           ## 特殊：主子表专属逻辑
           #if ( $table.templateType == 12 && $subTables && $subTables.size() > 0 )
             <!-- 子表的列表 -->
@@ -378,7 +426,7 @@ onMounted(() => {
   <Button
       size="small"
       type="link"
-      @click="onAppend(row as any)"
+      @click="handleAppend(row as any)"
       v-access:code="['${permissionPrefix}:create']"
   >
     新增下级
@@ -387,7 +435,7 @@ onMounted(() => {
             <Button
                 size="small"
                 type="link"
-                @click="onEdit(row as any)"
+                @click="handleEdit(row as any)"
                 v-access:code="['${permissionPrefix}:update']"
             >
               {{ $t('ui.actionTitle.edit') }}
@@ -400,7 +448,7 @@ onMounted(() => {
                 #if ( $table.templateType == 2 )
                 :disabled="!isEmpty(row?.children)"
                 #end
-                @click="onDelete(row as any)"
+                @click="handleDelete(row as any)"
                 v-access:code="['${permissionPrefix}:delete']"
             >
               {{ $t('ui.actionTitle.delete') }}
@@ -421,7 +469,6 @@ onMounted(() => {
       </div>
 #end
     </ContentWrap>
-
 #if ($table.templateType == 11) ## erp情况
   <ContentWrap>
     <!-- 子表的表单 -->

@@ -5,7 +5,9 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.pojo.PageParam;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.excel.core.util.ExcelUtils;
-import cn.iocoder.yudao.module.infra.controller.admin.config.vo.*;
+import cn.iocoder.yudao.module.infra.controller.admin.config.vo.ConfigPageReqVO;
+import cn.iocoder.yudao.module.infra.controller.admin.config.vo.ConfigRespVO;
+import cn.iocoder.yudao.module.infra.controller.admin.config.vo.ConfigSaveReqVO;
 import cn.iocoder.yudao.module.infra.convert.config.ConfigConvert;
 import cn.iocoder.yudao.module.infra.dal.dataobject.config.ConfigDO;
 import cn.iocoder.yudao.module.infra.enums.ErrorCodeConstants;
@@ -13,13 +15,13 @@ import cn.iocoder.yudao.module.infra.service.config.ConfigService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.Resource;
+import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
-import jakarta.annotation.Resource;
-import jakarta.servlet.http.HttpServletResponse;
-import jakarta.validation.Valid;
 import java.io.IOException;
 import java.util.List;
 
@@ -60,6 +62,15 @@ public class ConfigController {
         return success(true);
     }
 
+    @DeleteMapping("/delete-list")
+    @Operation(summary = "批量删除参数配置")
+    @Parameter(name = "ids", description = "编号列表", required = true)
+    @PreAuthorize("@ss.hasPermission('infra:config:delete')")
+    public CommonResult<Boolean> deleteConfigList(@RequestParam("ids") List<Long> ids) {
+        configService.deleteConfigList(ids);
+        return success(true);
+    }
+
     @GetMapping(value = "/get")
     @Operation(summary = "获得参数配置")
     @Parameter(name = "id", description = "编号", required = true, example = "1024")
@@ -90,7 +101,7 @@ public class ConfigController {
         return success(ConfigConvert.INSTANCE.convertPage(page));
     }
 
-    @GetMapping("/export")
+    @GetMapping("/export-excel")
     @Operation(summary = "导出参数配置")
     @PreAuthorize("@ss.hasPermission('infra:config:export')")
     @ApiAccessLog(operateType = EXPORT)
