@@ -138,6 +138,7 @@ watch(
   () => props.${subJoinColumn.javaField},
   (val: number) => {
     if (!val) {
+      list.value = [] // 清空列表
       return
     }
     queryParams.${subJoinColumn.javaField} = val
@@ -208,6 +209,7 @@ const handleDeleteBatch = async () => {
     // 删除的二次确认
     await message.delConfirm()
     await ${simpleClassName}Api.delete${subSimpleClassName}List(checkedIds.value);
+    checkedIds.value = [];
     message.success(t('common.delSuccess'))
     await getList();
   } catch {}

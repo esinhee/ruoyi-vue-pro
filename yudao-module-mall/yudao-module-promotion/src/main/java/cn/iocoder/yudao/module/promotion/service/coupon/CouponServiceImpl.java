@@ -137,7 +137,6 @@ public class CouponServiceImpl implements CouponService {
 
         // 4. 增加优惠劵模板的领取数量
         couponTemplateService.updateCouponTemplateTakeCount(template.getId(), userIds.size());
-
         return convertMultiMap(couponList, CouponDO::getUserId, CouponDO::getId);
     }
 
@@ -167,6 +166,10 @@ public class CouponServiceImpl implements CouponService {
     public void invalidateCouponsByAdmin(List<Long> giveCouponIds, Long userId) {
         // 循环收回
         for (Long couponId : giveCouponIds) {
+            // couponId 为空或 0 则跳过
+            if (null == couponId || couponId <= 0) {
+                continue;
+            }
             try {
                 getSelf().invalidateCoupon(couponId, userId);
             } catch (Exception e) {
@@ -281,7 +284,7 @@ public class CouponServiceImpl implements CouponService {
         }
         // 校验发放数量不能过小（仅在 CouponTakeTypeEnum.USER 用户领取时）
         if (CouponTakeTypeEnum.isUser(couponTemplate.getTakeType())
-                && ObjUtil.notEqual(couponTemplate.getTakeLimitCount(), CouponTemplateDO.TIME_LIMIT_COUNT_MAX) // 非不限制
+                && ObjUtil.notEqual(couponTemplate.getTakeLimitCount(), CouponTemplateDO.TAKE_LIMIT_COUNT_MAX) // 非不限制
                 && couponTemplate.getTakeCount() + userIds.size() > couponTemplate.getTotalCount()) {
             throw exception(COUPON_TEMPLATE_NOT_ENOUGH);
         }

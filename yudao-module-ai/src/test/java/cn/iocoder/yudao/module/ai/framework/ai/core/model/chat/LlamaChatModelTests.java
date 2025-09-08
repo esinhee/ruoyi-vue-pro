@@ -24,7 +24,9 @@ import java.util.List;
 public class LlamaChatModelTests {
 
     private final OllamaChatModel chatModel = OllamaChatModel.builder()
-            .ollamaApi(new OllamaApi("http://127.0.0.1:11434")) // Ollama 服务地址
+            .ollamaApi(OllamaApi.builder()
+                    .baseUrl("http://127.0.0.1:11434")  // Ollama 服务地址
+                    .build())
             .defaultOptions(OllamaOptions.builder()
                     .model(OllamaModel.LLAMA3.getName()) // 模型
                     .build())
@@ -61,5 +63,25 @@ public class LlamaChatModelTests {
             System.out.println(response.getResult().getOutput());
         }).then().block();
     }
+
+    @Test
+    @Disabled
+    public void testStream_thinking() {
+        // 准备参数
+        List<Message> messages = new ArrayList<>();
+        messages.add(new UserMessage("详细分析下，如何设计一个电商系统？"));
+        OllamaOptions options = OllamaOptions.builder()
+                .model("qwen3")
+                .build();
+
+        // 调用
+        Flux<ChatResponse> flux = chatModel.stream(new Prompt(messages, options));
+        // 打印结果
+        flux.doOnNext(response -> {
+//            System.out.println(response);
+            System.out.println(response.getResult().getOutput());
+        }).then().block();
+    }
+
 
 }
