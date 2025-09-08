@@ -478,7 +478,11 @@ public class BpmnModelUtils {
      */
     public static FlowElement getFlowElementById(BpmnModel model, String flowElementId) {
         Process process = model.getMainProcess();
-        return process.getFlowElement(flowElementId);
+        FlowElement flowElement = process.getFlowElement(flowElementId);
+        if (flowElement != null) {
+            return flowElement;
+        }
+        return model.getFlowElement(flowElementId);
     }
 
     /**
@@ -796,9 +800,10 @@ public class BpmnModelUtils {
             || currentElement instanceof EndEvent
             || currentElement instanceof UserTask
             || currentElement instanceof ServiceTask) {
-            // 添加元素
+            // 添加节点
             FlowNode flowNode = (FlowNode) currentElement;
             resultElements.add(flowNode);
+
             // 遍历子节点
             flowNode.getOutgoingFlows().forEach(
                     nextElement -> simulateNextFlowElements(nextElement.getTargetFlowElement(), variables, resultElements, visitElements));
@@ -829,6 +834,31 @@ public class BpmnModelUtils {
             gateway.getOutgoingFlows().forEach(
                     nextElement -> simulateNextFlowElements(nextElement.getTargetFlowElement(), variables, resultElements, visitElements));
         }
+    }
+
+    /**
+     * 判断是否跳过此节点
+     *
+     * @param flowNode 节点
+     * @param variables 流程变量
+     */
+    public static boolean isSkipNode(FlowElement flowNode, Map<String, Object> variables) {
+        // 1. 检查节点是否有跳过表达式（支持多种任务节点类型）
+        String skipExpression = null;
+        if (flowNode instanceof UserTask) {
+            skipExpression = ((UserTask) flowNode).getSkipExpression();
+        } else if (flowNode instanceof ServiceTask) {
+            skipExpression = ((ServiceTask) flowNode).getSkipExpression();
+        } else if (flowNode instanceof ScriptTask) {
+            skipExpression = ((ScriptTask) flowNode).getSkipExpression();
+        }
+
+        if (StrUtil.isEmpty(skipExpression)) {
+            return false;
+        }
+
+        // 2. 计算跳过表达式的值
+        return evalConditionExpress(variables, skipExpression);
     }
 
     /**
@@ -876,6 +906,49 @@ public class BpmnModelUtils {
             }
         }
         return nextFlowNodes;
+    }
+
+    /**
+     * 查找起始节点下一个用户任务列表列表
+     *
+     * @param source 起始节点
+     * @return 结果
+     */
+    public static List<UserTask> getNextUserTasks(FlowElement source) {
+        return getNextUserTasks(source, null, null);
+    }
+
+    /**
+     * 查找起始节点下一个用户任务列表列表
+     * @param source 起始节点
+     * @param hasSequenceFlow 已经经过的连线的 ID，用于判断线路是否重复
+     * @param userTaskList 用户任务列表
+     * @return 结果
+     */
+    public static List<UserTask> getNextUserTasks(FlowElement source, Set<String> hasSequenceFlow, List<UserTask> userTaskList) {
+        hasSequenceFlow = Optional.ofNullable(hasSequenceFlow).orElse(new HashSet<>());
+        userTaskList = Optional.ofNullable(userTaskList).orElse(new ArrayList<>());
+        // 获取出口连线
+        List<SequenceFlow> sequenceFlows = getElementOutgoingFlows(source);
+        if (!sequenceFlows.isEmpty()) {
+            for (SequenceFlow sequenceFlow : sequenceFlows) {
+                // 如果发现连线重复，说明循环了，跳过这个循环
+                if (hasSequenceFlow.contains(sequenceFlow.getId())) {
+                    continue;
+                }
+                // 添加已经走过的连线
+                hasSequenceFlow.add(sequenceFlow.getId());
+                FlowElement targetFlowElement = sequenceFlow.getTargetFlowElement();
+                if (targetFlowElement instanceof UserTask) {
+                    // 若节点为用户任务，加入到结果列表中
+                    userTaskList.add((UserTask) targetFlowElement);
+                } else {
+                    // 若节点非用户任务，继续递归查找下一个节点
+                    getNextUserTasks(targetFlowElement, hasSequenceFlow, userTaskList);
+                }
+            }
+        }
+        return userTaskList;
     }
 
     /**
@@ -993,7 +1066,7 @@ public class BpmnModelUtils {
      * @return 是否满足条件
      */
     public static boolean evalConditionExpress(Map<String, Object> variables, String expression) {
-        if (expression == null) {
+        if (StrUtil.isEmpty(expression)) {
             return Boolean.FALSE;
         }
         // 如果 variables 为空，则创建一个的原因？可能 expression 的计算，不依赖于 variables

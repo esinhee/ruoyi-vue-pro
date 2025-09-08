@@ -4,11 +4,9 @@ import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.collection.ListUtil;
 import cn.hutool.core.date.DateUtil;
 import cn.hutool.core.lang.Assert;
-import cn.hutool.core.util.ArrayUtil;
-import cn.hutool.core.util.ObjUtil;
-import cn.hutool.core.util.ObjectUtil;
-import cn.hutool.core.util.StrUtil;
+import cn.hutool.core.util.*;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
+import cn.iocoder.yudao.framework.common.util.collection.CollectionUtils;
 import cn.iocoder.yudao.framework.common.util.date.DateUtils;
 import cn.iocoder.yudao.framework.common.util.json.JsonUtils;
 import cn.iocoder.yudao.framework.common.util.object.ObjectUtils;
@@ -54,6 +52,7 @@ import org.flowable.engine.history.HistoricActivityInstance;
 import org.flowable.engine.history.HistoricProcessInstance;
 import org.flowable.engine.history.HistoricProcessInstanceQuery;
 import org.flowable.engine.repository.ProcessDefinition;
+import org.flowable.engine.runtime.Execution;
 import org.flowable.engine.runtime.ProcessInstance;
 import org.flowable.engine.runtime.ProcessInstanceBuilder;
 import org.flowable.task.api.Task;
@@ -61,6 +60,8 @@ import org.flowable.task.api.history.HistoricTaskInstance;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.validation.annotation.Validated;
 
 import java.util.*;
@@ -69,6 +70,7 @@ import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionU
 import static cn.iocoder.yudao.framework.common.util.collection.CollectionUtils.*;
 import static cn.iocoder.yudao.module.bpm.controller.admin.task.vo.instance.BpmApprovalDetailRespVO.ActivityNode;
 import static cn.iocoder.yudao.module.bpm.enums.ErrorCodeConstants.*;
+import static cn.iocoder.yudao.module.bpm.enums.task.BpmReasonEnum.REJECT_CHILD_PROCESS;
 import static cn.iocoder.yudao.module.bpm.framework.flowable.core.enums.BpmnModelConstants.START_USER_NODE_ID;
 import static cn.iocoder.yudao.module.bpm.framework.flowable.core.util.BpmnModelUtils.parseNodeType;
 import static java.util.Arrays.asList;
@@ -220,11 +222,6 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
         List<ActivityNode> simulateActivityNodes = getSimulateApproveNodeList(startUserId, bpmnModel,
                 processDefinitionInfo,
                 processVariables, activities);
-        // 3.3 如果是发起动作，activityId 为开始节点，不校验审批人自选节点
-        if (ObjUtil.equals(reqVO.getActivityId(), BpmnModelConstants.START_USER_NODE_ID)) {
-            simulateActivityNodes.removeIf(node ->
-                    BpmTaskCandidateStrategyEnum.APPROVE_USER_SELECT.getStrategy().equals(node.getCandidateStrategy()));
-        }
 
         // 4. 拼接最终数据
         return buildApprovalDetail(reqVO, bpmnModel, processDefinition, processDefinitionInfo, historicProcessInstance,
@@ -264,7 +261,9 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
         // 3. 获取下一个将要执行的节点集合
         FlowElement flowElement = bpmnModel.getFlowElement(task.getTaskDefinitionKey());
         List<FlowNode> nextFlowNodes = BpmnModelUtils.getNextFlowNodes(flowElement, bpmnModel, processVariables);
-        List<ActivityNode> nextActivityNodes = convertList(nextFlowNodes, node -> new ActivityNode().setId(node.getId())
+        // 仅仅获取 UserTask 节点  TODO add from jason：如果网关节点和网关节点相连，获取下个 UserTask. 貌似有点不准。
+        List<FlowNode> nextUserTaskList = CollectionUtils.filterList(nextFlowNodes, node -> node instanceof UserTask);
+        List<ActivityNode> nextActivityNodes = convertList(nextUserTaskList, node -> new ActivityNode().setId(node.getId())
                 .setName(node.getName()).setNodeType(BpmSimpleModelNodeTypeEnum.APPROVE_NODE.getType())
                 .setStatus(BpmTaskStatusEnum.RUNNING.getStatus())
                 .setCandidateStrategy(BpmnModelUtils.parseCandidateStrategy(node))
@@ -395,7 +394,7 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
                             ? BpmSimpleModelNodeTypeEnum.START_USER_NODE.getType()
                             : ObjUtil.defaultIfNull(parseNodeType(flowNode), // 目的：解决“办理节点”的识别
                             BpmSimpleModelNodeTypeEnum.APPROVE_NODE.getType()))
-                    .setStatus(FlowableUtils.getTaskStatus(task))
+                    .setStatus(getEndActivityNodeStatus(task))
                     .setCandidateStrategy(BpmnModelUtils.parseCandidateStrategy(flowNode))
                     .setStartTime(DateUtils.of(task.getCreateTime())).setEndTime(DateUtils.of(task.getEndTime()))
                     .setTasks(singletonList(BpmProcessInstanceConvert.INSTANCE.buildApprovalTaskInfo(task)));
@@ -412,7 +411,9 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
         endActivities.forEach(activity -> {
             // StartEvent：只处理 BPMN 的场景。因为，SIMPLE 情况下，已经有 START_USER_NODE 节点
             if (ELEMENT_EVENT_START.equals(activity.getActivityType())
-                    && BpmModelTypeEnum.BPMN.getType().equals(processDefinitionInfo.getModelType())) {
+                    && BpmModelTypeEnum.BPMN.getType().equals(processDefinitionInfo.getModelType())
+                    && !CollUtil.contains(activities, // 特殊：如果已经存在用户手动创建的 START_USER_NODE_ID 节点，则忽略 StartEvent
+                    historicActivity -> historicActivity.getActivityId().equals(START_USER_NODE_ID))) {
                 ActivityNodeTask startTask = new ActivityNodeTask().setId(BpmnModelConstants.START_USER_NODE_ID)
                         .setAssignee(startUserId).setStatus(BpmTaskStatusEnum.APPROVE.getStatus());
                 ActivityNode startNode = new ActivityNode().setId(startTask.getId())
@@ -449,7 +450,7 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
                         .setNodeType(BpmSimpleModelNodeTypeEnum.CHILD_PROCESS.getType()).setStatus(processInstanceStatus)
                         .setStartTime(DateUtils.of(activity.getStartTime()))
                         .setEndTime(DateUtils.of(activity.getEndTime()))
-                        .setProcessInstanceId(activity.getProcessInstanceId());
+                        .setProcessInstanceId(activity.getCalledProcessInstanceId());
                 approvalNodes.add(callActivity);
             }
         });
@@ -457,6 +458,18 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
         // 按照时间排序
         approvalNodes.sort(Comparator.comparing(ActivityNode::getStartTime));
         return approvalNodes;
+    }
+
+    /**
+     *  获取结束节点的状态
+     */
+    private Integer getEndActivityNodeStatus(HistoricTaskInstance task) {
+        Integer status = FlowableUtils.getTaskStatus(task);
+        if (status != null) {
+            return status;
+        }
+        // 结束节点未获取到状态，为跳过状态。可见 bpmn 或者 simple 的 skipExpression
+        return BpmTaskStatusEnum.SKIP.getStatus();
     }
 
     /**
@@ -521,7 +534,7 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
                 activityNode.setCandidateUserIds(CollUtil.sub(candidateUserIds, index + 1, candidateUserIds.size()));
             }
             if (BpmSimpleModelNodeTypeEnum.CHILD_PROCESS.getType().equals(activityNode.getNodeType())) {
-                activityNode.setProcessInstanceId(firstActivity.getProcessInstanceId());
+                activityNode.setProcessInstanceId(firstActivity.getCalledProcessInstanceId());
             }
             return activityNode;
         });
@@ -540,7 +553,8 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
         // 情况一：BPMN 设计器
         if (Objects.equals(BpmModelTypeEnum.BPMN.getType(), processDefinitionInfo.getModelType())) {
             List<FlowElement> flowElements = BpmnModelUtils.simulateProcess(bpmnModel, processVariables);
-            return convertList(flowElements, flowElement -> buildNotRunApproveNodeForBpmn(startUserId, bpmnModel,
+            return convertList(flowElements, flowElement -> buildNotRunApproveNodeForBpmn(
+                    startUserId, bpmnModel, flowElements,
                     processDefinitionInfo, processVariables, flowElement, runActivityIds));
         }
         // 情况二：SIMPLE 设计器
@@ -548,7 +562,8 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
             BpmSimpleModelNodeVO simpleModel = JsonUtils.parseObject(processDefinitionInfo.getSimpleModel(),
                     BpmSimpleModelNodeVO.class);
             List<BpmSimpleModelNodeVO> simpleNodes = SimpleModelUtils.simulateProcess(simpleModel, processVariables);
-            return convertList(simpleNodes, simpleNode -> buildNotRunApproveNodeForSimple(startUserId, bpmnModel,
+            return convertList(simpleNodes, simpleNode -> buildNotRunApproveNodeForSimple(
+                    startUserId, bpmnModel,
                     processDefinitionInfo, processVariables, simpleNode, runActivityIds));
         }
         throw new IllegalArgumentException("未知设计器类型：" + processDefinitionInfo.getModelType());
@@ -562,10 +577,14 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
         if (runActivityIds.contains(node.getId())) {
             return null;
         }
-
+        Integer status = BpmTaskStatusEnum.NOT_START.getStatus();
+        // 如果节点被跳过。设置状态为跳过
+        if (SimpleModelUtils.isSkipNode(node, processVariables)) {
+            status = BpmTaskStatusEnum.SKIP.getStatus();
+        }
         ActivityNode activityNode = new ActivityNode().setId(node.getId()).setName(node.getName())
                 .setNodeType(node.getType()).setCandidateStrategy(node.getCandidateStrategy())
-                .setStatus(BpmTaskStatusEnum.NOT_START.getStatus());
+                .setStatus(status);
 
         // 1. 开始节点/审批节点
         if (ObjectUtils.equalsAny(node.getType(),
@@ -599,17 +618,27 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
         return null;
     }
 
-    private ActivityNode buildNotRunApproveNodeForBpmn(Long startUserId, BpmnModel bpmnModel,
-                                                       BpmProcessDefinitionInfoDO processDefinitionInfo, Map<String, Object> processVariables,
+    private ActivityNode buildNotRunApproveNodeForBpmn(Long startUserId, BpmnModel bpmnModel, List<FlowElement> flowElements,
+                                                       BpmProcessDefinitionInfoDO processDefinitionInfo,
+                                                       Map<String, Object> processVariables,
                                                        FlowElement node, Set<String> runActivityIds) {
         if (runActivityIds.contains(node.getId())) {
             return null;
         }
+        Integer status = BpmTaskStatusEnum.NOT_START.getStatus();
+        // 如果节点被跳过，状态设置为跳过
+        if(BpmnModelUtils.isSkipNode(node, processVariables)){
+            status = BpmTaskStatusEnum.SKIP.getStatus();
+        }
         ActivityNode activityNode = new ActivityNode().setId(node.getId())
-                .setStatus(BpmTaskStatusEnum.NOT_START.getStatus());
+                .setStatus(status);
 
         // 1. 开始节点
         if (node instanceof StartEvent) {
+            if (CollUtil.contains(flowElements, // 特殊：如果已经存在用户手动创建的 START_USER_NODE_ID 节点，则忽略 StartEvent
+                    flowElement -> flowElement.getId().equals(START_USER_NODE_ID))) {
+                return null;
+            }
             return activityNode.setName(BpmSimpleModelNodeTypeEnum.START_USER_NODE.getName())
                     .setNodeType(BpmSimpleModelNodeTypeEnum.START_USER_NODE.getType());
         }
@@ -771,17 +800,7 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
             processInstanceBuilder.predefineProcessInstanceId(processIdRedisDAO.generate(processIdRule));
         }
         // 3.2 流程名称
-        BpmModelMetaInfoVO.TitleSetting titleSetting = processDefinitionInfo.getTitleSetting();
-        if (titleSetting != null && Boolean.TRUE.equals(titleSetting.getEnable())) {
-            AdminUserRespDTO user = adminUserApi.getUser(userId);
-            Map<String, Object> cloneVariables = new HashMap<>(variables);
-            cloneVariables.put(BpmnVariableConstants.PROCESS_INSTANCE_VARIABLE_START_USER_ID, user.getNickname());
-            cloneVariables.put(BpmnVariableConstants.PROCESS_START_TIME, DateUtil.now());
-            cloneVariables.put(BpmnVariableConstants.PROCESS_DEFINITION_NAME, definition.getName().trim());
-            processInstanceBuilder.name(StrUtil.format(titleSetting.getTitle(), cloneVariables));
-        } else {
-            processInstanceBuilder.name(definition.getName().trim());
-        }
+        processInstanceBuilder.name(generateProcessInstanceName(userId, definition, processDefinitionInfo, variables));
         // 3.3 发起流程实例
         ProcessInstance instance = processInstanceBuilder.start();
         return instance.getId();
@@ -817,6 +836,25 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
         });
     }
 
+    private String generateProcessInstanceName(Long userId,
+                                               ProcessDefinition definition,
+                                               BpmProcessDefinitionInfoDO definitionInfo,
+                                               Map<String, Object> variables) {
+        if (definition == null || definitionInfo == null) {
+            return null;
+        }
+        BpmModelMetaInfoVO.TitleSetting titleSetting = definitionInfo.getTitleSetting();
+        if (titleSetting == null || !BooleanUtil.isTrue(titleSetting.getEnable())) {
+            return definition.getName();
+        }
+        AdminUserRespDTO user = adminUserApi.getUser(userId);
+        Map<String, Object> cloneVariables = new HashMap<>(variables);
+        cloneVariables.put(BpmnVariableConstants.PROCESS_INSTANCE_VARIABLE_START_USER_ID, user.getNickname());
+        cloneVariables.put(BpmnVariableConstants.PROCESS_START_TIME, DateUtil.now());
+        cloneVariables.put(BpmnVariableConstants.PROCESS_DEFINITION_NAME, definition.getName().trim());
+        return StrUtil.format(definitionInfo.getTitleSetting().getTitle(), cloneVariables);
+    }
+
     @Override
     public void cancelProcessInstanceByStartUser(Long userId, @Valid BpmProcessInstanceCancelReqVO cancelReqVO) {
         // 1.1 校验流程实例存在
@@ -833,7 +871,7 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
                 .getProcessDefinitionInfo(instance.getProcessDefinitionId());
         Assert.notNull(processDefinitionInfo, "流程定义({})不存在", processDefinitionInfo);
         if (processDefinitionInfo.getAllowCancelRunningProcess() != null // 防止未配置 AllowCancelRunningProcess , 默认为可取消
-                && Boolean.FALSE.equals(processDefinitionInfo.getAllowCancelRunningProcess())) {
+                && BooleanUtil.isFalse(processDefinitionInfo.getAllowCancelRunningProcess())) {
             throw exception(PROCESS_INSTANCE_CANCEL_FAIL_NOT_ALLOW);
         }
         // 1.4 子流程不允许取消
@@ -900,63 +938,100 @@ public class BpmProcessInstanceServiceImpl implements BpmProcessInstanceService 
 
     @Override
     public void processProcessInstanceCompleted(ProcessInstance instance) {
-        // 注意：需要基于 instance 设置租户编号，避免 Flowable 内部异步时，丢失租户编号
-        FlowableUtils.execute(instance.getTenantId(), () -> {
-            // 1.1 获取当前状态
-            Integer status = (Integer) instance.getProcessVariables()
-                    .get(BpmnVariableConstants.PROCESS_INSTANCE_VARIABLE_STATUS);
-            String reason = (String) instance.getProcessVariables()
-                    .get(BpmnVariableConstants.PROCESS_INSTANCE_VARIABLE_REASON);
-            // 1.2 当流程状态还是审批状态中，说明审批通过了，则变更下它的状态
-            // 为什么这么处理？因为流程完成，并且完成了，说明审批通过了
-            if (Objects.equals(status, BpmProcessInstanceStatusEnum.RUNNING.getStatus())) {
-                status = BpmProcessInstanceStatusEnum.APPROVE.getStatus();
-                runtimeService.setVariable(instance.getId(), BpmnVariableConstants.PROCESS_INSTANCE_VARIABLE_STATUS,
-                        status);
-            }
+        // 1.1 获取当前状态
+        Integer status = (Integer) instance.getProcessVariables()
+                .get(BpmnVariableConstants.PROCESS_INSTANCE_VARIABLE_STATUS);
+        String reason = (String) instance.getProcessVariables()
+                .get(BpmnVariableConstants.PROCESS_INSTANCE_VARIABLE_REASON);
+        // 1.2 当流程状态还是审批状态中，说明审批通过了，则变更下它的状态
+        // 为什么这么处理？因为流程完成，并且完成了，说明审批通过了
+        if (Objects.equals(status, BpmProcessInstanceStatusEnum.RUNNING.getStatus())) {
+            status = BpmProcessInstanceStatusEnum.APPROVE.getStatus();
+            runtimeService.setVariable(instance.getId(), BpmnVariableConstants.PROCESS_INSTANCE_VARIABLE_STATUS,
+                    status);
+        }
 
-            // 2. 发送对应的消息通知
-            if (Objects.equals(status, BpmProcessInstanceStatusEnum.APPROVE.getStatus())) {
-                messageService.sendMessageWhenProcessInstanceApprove(
-                        BpmProcessInstanceConvert.INSTANCE.buildProcessInstanceApproveMessage(instance));
-            } else if (Objects.equals(status, BpmProcessInstanceStatusEnum.REJECT.getStatus())) {
-                messageService.sendMessageWhenProcessInstanceReject(
-                        BpmProcessInstanceConvert.INSTANCE.buildProcessInstanceRejectMessage(instance, reason));
-            }
+        // 1.3 如果子流程拒绝，设置其父流程也为拒绝状态，且结束父流程
+        // 相关问题链接：https://t.zsxq.com/kZhyb
+        if (Objects.equals(status, BpmProcessInstanceStatusEnum.REJECT.getStatus())
+                && StrUtil.isNotBlank(instance.getSuperExecutionId())) {
+            // 1.3.1 获取父流程实例 并标记为不通过
+            Execution execution = runtimeService.createExecutionQuery().executionId(instance.getSuperExecutionId()).singleResult();
+            ProcessInstance parentProcessInstance = getProcessInstance(execution.getProcessInstanceId());
+            updateProcessInstanceReject(parentProcessInstance, BpmReasonEnum.REJECT_CHILD_PROCESS.getReason());
 
-            // 3. 发送流程实例的状态事件
-            processInstanceEventPublisher.sendProcessInstanceResultEvent(
-                    BpmProcessInstanceConvert.INSTANCE.buildProcessInstanceStatusEvent(this, instance, status));
+            // 1.3.2 结束父流程。需要在子流程结束事务提交后执行
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
 
-            // 4. 流程后置通知
-            if (Objects.equals(status, BpmProcessInstanceStatusEnum.APPROVE.getStatus())) {
-                BpmProcessDefinitionInfoDO processDefinitionInfo = processDefinitionService.
-                        getProcessDefinitionInfo(instance.getProcessDefinitionId());
-                if (ObjUtil.isNotNull(processDefinitionInfo) &&
-                        ObjUtil.isNotNull(processDefinitionInfo.getProcessAfterTriggerSetting())) {
-                    BpmModelMetaInfoVO.HttpRequestSetting setting = processDefinitionInfo.getProcessAfterTriggerSetting();
-
-                    BpmHttpRequestUtils.executeBpmHttpRequest(instance,
-                            setting.getUrl(), setting.getHeader(), setting.getBody(), true, setting.getResponse());
+                @Override
+                public void afterCompletion(int transactionStatus) {
+                    // 回滚情况，直接返回
+                    if (ObjectUtil.equal(transactionStatus, TransactionSynchronization.STATUS_ROLLED_BACK)) {
+                        return;
+                    }
+                    taskService.moveTaskToEnd(parentProcessInstance.getId(), BpmReasonEnum.REJECT_CHILD_PROCESS.getReason());
                 }
+            });
+        }
+
+        // 2. 发送对应的消息通知
+        if (Objects.equals(status, BpmProcessInstanceStatusEnum.APPROVE.getStatus())) {
+            messageService.sendMessageWhenProcessInstanceApprove(
+                    BpmProcessInstanceConvert.INSTANCE.buildProcessInstanceApproveMessage(instance));
+        } else if (Objects.equals(status, BpmProcessInstanceStatusEnum.REJECT.getStatus())) {
+            messageService.sendMessageWhenProcessInstanceReject(
+                    BpmProcessInstanceConvert.INSTANCE.buildProcessInstanceRejectMessage(instance, reason));
+        }
+
+        // 3. 发送流程实例的状态事件
+        processInstanceEventPublisher.sendProcessInstanceResultEvent(
+                BpmProcessInstanceConvert.INSTANCE.buildProcessInstanceStatusEvent(this, instance, status, reason));
+
+        // 4. 流程后置通知
+        if (Objects.equals(status, BpmProcessInstanceStatusEnum.APPROVE.getStatus())) {
+            BpmProcessDefinitionInfoDO processDefinitionInfo = processDefinitionService.
+                    getProcessDefinitionInfo(instance.getProcessDefinitionId());
+            if (ObjUtil.isNotNull(processDefinitionInfo) &&
+                    ObjUtil.isNotNull(processDefinitionInfo.getProcessAfterTriggerSetting())) {
+                BpmModelMetaInfoVO.HttpRequestSetting setting = processDefinitionInfo.getProcessAfterTriggerSetting();
+
+                BpmHttpRequestUtils.executeBpmHttpRequest(instance,
+                        setting.getUrl(), setting.getHeader(), setting.getBody(), true, setting.getResponse());
             }
-        });
+        }
     }
 
     @Override
     public void processProcessInstanceCreated(ProcessInstance instance) {
-        // 注意：需要基于 instance 设置租户编号，避免 Flowable 内部异步时，丢失租户编号
-        FlowableUtils.execute(instance.getTenantId(), () -> {
-            // 流程前置通知
-            BpmProcessDefinitionInfoDO processDefinitionInfo = processDefinitionService.
-                    getProcessDefinitionInfo(instance.getProcessDefinitionId());
-            if (ObjUtil.isNull(processDefinitionInfo) ||
-                    ObjUtil.isNull(processDefinitionInfo.getProcessBeforeTriggerSetting())) {
-                return;
+        BpmProcessDefinitionInfoDO processDefinitionInfo = processDefinitionService.
+                getProcessDefinitionInfo(instance.getProcessDefinitionId());
+        ProcessDefinition processDefinition = processDefinitionService.getProcessDefinition(instance.getProcessDefinitionId());
+        if (processDefinition == null || processDefinitionInfo == null) {
+            return;
+        }
+
+        // 自定义标题。目的：主要处理子流程的标题无法处理
+        // 注意：必须使用 TransactionSynchronizationManager 事务提交后，否则不生效！！！
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+
+            @Override
+            public void afterCommit() {
+                String name = generateProcessInstanceName(Long.valueOf(instance.getStartUserId()),
+                        processDefinition, processDefinitionInfo, instance.getProcessVariables());
+                if (ObjUtil.notEqual(instance.getName(), name)) {
+                    runtimeService.setProcessInstanceName(instance.getProcessInstanceId(), name);
+                }
+
+                // 流程前置通知：需要在流程启动后(事务提交后)，保证 variables 已设置
+                // 相关问题链接：https://t.zsxq.com/DF7Kq
+                if (ObjUtil.isNull(processDefinitionInfo.getProcessBeforeTriggerSetting())) {
+                    return;
+                }
+                BpmModelMetaInfoVO.HttpRequestSetting setting = processDefinitionInfo.getProcessBeforeTriggerSetting();
+                BpmHttpRequestUtils.executeBpmHttpRequest(instance,
+                        setting.getUrl(), setting.getHeader(), setting.getBody(), true, setting.getResponse());
             }
-            BpmModelMetaInfoVO.HttpRequestSetting setting = processDefinitionInfo.getProcessBeforeTriggerSetting();
-            BpmHttpRequestUtils.executeBpmHttpRequest(instance,
-                    setting.getUrl(), setting.getHeader(), setting.getBody(), true, setting.getResponse());
+
         });
     }
 

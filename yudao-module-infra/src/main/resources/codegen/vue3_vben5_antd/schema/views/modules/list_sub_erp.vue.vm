@@ -82,6 +82,7 @@ async function handleDeleteBatch() {
   });
   try {
     await delete${subSimpleClassName}List(checkedIds.value);
+    checkedIds.value = [];
     message.success({
       content: $t('ui.actionMessage.deleteSuccess', [row.id]),
       key: 'action_key_msg',
@@ -131,7 +132,7 @@ const [Grid, gridApi] = useVbenVxeGrid({
     enabled: true,
   },
   toolbarConfig: {
-    refresh: { code: 'query' },
+    refresh: true,
     search: true,
   },
 #else
