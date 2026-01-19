@@ -58,13 +58,22 @@ public class PayWalletServiceImpl implements PayWalletService {
     private PayRefundService refundService;
 
     @Override
+    @SneakyThrows
     public PayWalletDO getOrCreateWallet(Long userId, Integer userType) {
         PayWalletDO wallet = walletMapper.selectByUserIdAndType(userId, userType);
         if (wallet == null) {
-            wallet = new PayWalletDO().setUserId(userId).setUserType(userType)
-                    .setBalance(0).setTotalExpense(0).setTotalRecharge(0);
-            wallet.setCreateTime(LocalDateTime.now());
-            walletMapper.insert(wallet);
+            // 使用双重检查锁，保证钱包创建并发问题
+            // https://gitee.com/zhijiantianya/ruoyi-vue-pro/pulls/1475/files
+            wallet = lockRedisDAO.lock(userId, UPDATE_TIMEOUT_MILLIS, () -> {
+                PayWalletDO newWallet = walletMapper.selectByUserIdAndType(userId, userType);
+                if (newWallet == null) {
+                    newWallet = new PayWalletDO().setUserId(userId).setUserType(userType)
+                            .setBalance(0).setTotalExpense(0).setTotalRecharge(0);
+                    newWallet.setCreateTime(LocalDateTime.now());
+                    walletMapper.insert(newWallet);
+                }
+                return newWallet;
+            });
         }
         return wallet;
     }
@@ -165,7 +174,11 @@ public class PayWalletServiceImpl implements PayWalletService {
             }
 
             // 3. 生成钱包流水
-            Integer afterBalance = payWallet.getBalance() - price;
+            // 情况一：充值退款：balance 在冻结时已扣，updateWhenRechargeRefund 只扣 freeze_price，所以 afterBalance 不变。https://t.zsxq.com/OJk9m
+            // 情况二：消费支付：updateWhenConsumption 从 balance 扣，所以 afterBalance = balance - price
+            Integer afterBalance = bizType == PayWalletBizTypeEnum.RECHARGE_REFUND
+                    ? payWallet.getBalance()
+                    : payWallet.getBalance() - price;
             WalletTransactionCreateReqBO bo = new WalletTransactionCreateReqBO().setWalletId(payWallet.getId())
                     .setPrice(-price).setBalance(afterBalance).setBizId(String.valueOf(bizId))
                     .setBizType(bizType.getType()).setTitle(bizType.getDescription());
